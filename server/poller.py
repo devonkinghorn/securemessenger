@@ -7,6 +7,7 @@ class Client:
     def __init__(self, client):
         self.cache = ''
         self.client = client
+        self.message = ''
 
 class Poller:
     """ Polling server """
@@ -17,6 +18,7 @@ class Poller:
         self.clients = {}
         self.size = 1024
         self.MessageHandler = MessageHandler
+        self.messages = {}
 
     def open_socket(self):
         """ Setup the socket for incoming clients """
@@ -86,7 +88,7 @@ class Poller:
 
     def handleClient(self,fd):
         try:
-            data = self.clients[fd].recv(self.size)
+            data = self.clients[fd].client.recv(self.size)
         except socket.error, (value,message):
             # if no data is available, move on to another client
             if value == errno.EAGAIN or errno.EWOULDBLOCK:
@@ -95,8 +97,95 @@ class Poller:
             sys.exit()
 
         if data:
-            self.clients[fd].client.send(data)
+            self.clients[fd].cache += data
+            index = self.clients[fd].cache.find('\n')
+            if index == '-1' or index == -1:
+                return
+            self.clients[fd].message = self.clients[fd].cache[0:index+1]
+            self.clients[fd].cache = self.clients[fd].cache[index+1:]
+            self.handleMessage(self.clients[fd])
         else:
             self.poller.unregister(fd)
             self.clients[fd].client.close()
             del self.clients[fd]
+
+    def handleMessage(self, client):
+        self.cache = client.cache
+        response = self.parse_message(client.message)
+        if response is None:
+            client.cache = client.message + client.cache
+            return
+        client.cache = self.cache
+        client.client.sendall(response)
+        
+    def parse_message(self,message):
+        fields = message.split()
+        if not fields:
+            return('error invalid message\n')
+        if fields[0] == 'reset':
+            self.messages = {}
+            return "OK\n"
+        if fields[0] == 'put':
+            try:
+                name = fields[1]
+                subject = fields[2]
+                length = int(fields[3])
+                if len(self.cache) < length:
+                    return None
+            except:
+                return('error invalid message\n')
+            data = self.read_put(length)
+            if data == None:
+                return None
+            self.store_message(name,subject,data)
+            return "OK\n"
+        if fields[0] == 'list':
+            try:
+                name = fields[1]
+            except:
+                return('error invalid message\n')
+            subjects,length = self.get_subjects(name)
+            response = "list %d\n" % length
+            response += subjects
+            return response
+        if fields[0] == 'get':
+            try:
+                name = fields[1]
+                index = int(fields[2])
+            except:
+                return('error invalid message\n')
+            subject,data = self.get_message(name,index)
+            if not subject:
+                return "error no such message for that user\n"
+            response = "message %s %d\n" % (subject,len(data))
+            response += data
+            return response
+        return('error invalid message\n')
+    
+    def store_message(self,name,subject,data):
+        if name not in self.messages:
+            self.messages[name] = []
+        self.messages[name].append((subject,data))
+
+    def get_subjects(self,name):
+        if name not in self.messages:
+            return "",0
+        response = ["%d %s\n" % (index+1,message[0]) for index,message in enumerate(self.messages[name])]
+        return "".join(response),len(response)
+
+    def get_message(self,name,index):
+        if index <= 0:
+            return None,None
+        try:
+            return self.messages[name][index-1]
+        except:
+            return None,None
+
+    def read_put(self,length):
+        data = self.cache
+        if len(data) > length:
+            self.cache = data[length:]
+            data = data[:length]
+        else:
+            self.cache = ''
+        return data

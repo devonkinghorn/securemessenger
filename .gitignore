@@ -1,3 +1,4 @@
 env
 .vscode
 
+server/*.pyc
